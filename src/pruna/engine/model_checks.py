@@ -169,6 +169,39 @@ def is_transformers_pipeline_with_vit(model: Any) -> bool:
     return isinstance(model, ImageClassificationPipeline) and is_vit(getattr(model, "model", None))
 
 
+def is_vit(model: Any) -> bool:
+    """
+    Check if the model is a ViT model.
+
+    Parameters
+    ----------
+    model : Any
+        The model to check.
+
+    Returns
+    -------
+    bool
+        True if the model is a ViT model, False otherwise.
+     """
+    return model.__class__.__name__ == "ViTForImageClassification"
+
+
+def is_transformers_pipeline_with_vit(model: Any) -> bool:
+    """
+    Check if the model is a transformers pipeline with a ViT model.
+
+    Parameters
+    ----------
+    model : Any
+        The model to check.
+
+    Returns
+    -------
+    bool
+        True if the model is a transformers pipeline, False otherwise.
+    """
+    return isinstance(model, ImageClassificationPipeline) and is_vit(getattr(model, "model", None))
+
 def is_transformers_pipeline_with_causal_lm(model: Any) -> bool:
     """
     Check if the model is a transformers pipeline (for tasks like text generation, classification, etc.).
