@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import math
-from collections import deque
 from typing import Any, Callable, Optional, Tuple
 
 import torch
@@ -244,23 +243,8 @@ try:
             self,
             hidden_states: torch.Tensor,
             head_mask: Optional[torch.Tensor] = None,
-        ) -> Tuple[torch.Tensor, None]:
-            """
-            Forward pass, proportional attention, and key-metric storage.
-
-            Parameters
-            ----------
-            hidden_states : torch.Tensor
-                Input token tensor of shape ``[batch, tokens, channels]``.
-            head_mask : torch.Tensor, optional
-                Mask for attention heads.
-
-            Returns
-            -------
-            Tuple[torch.Tensor, None]
-                Context layer and ``None`` (attention probs are not materialised
-                when using SDPA).
-            """
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+            """Forward pass with proportional attention and key-metric storage."""
             batch_size = hidden_states.shape[0]
             new_shape = (batch_size, -1, self.num_attention_heads, self.attention_head_size)
 
@@ -268,46 +252,26 @@ try:
             value_layer = self.value(hidden_states).view(*new_shape).transpose(1, 2)
             query_layer = self.query(hidden_states).view(*new_shape).transpose(1, 2)
 
-            # Store the key mean as the similarity metric for token merging.
-            self._tome_info["metric"] = key_layer.mean(1)
+            # Eager attention so we can inject the proportional-attention term.
+            attn_weights = (query_layer @ key_layer.transpose(-2, -1)) * self.scaling
 
             # Proportional attention: bias scores by log(token_size).
-            attention_mask = None
             if self._tome_info["prop_attn"] and self._tome_info["size"] is not None:
-                attention_mask = self._tome_info["size"].log()[:, None, None, :, 0]
+                attn_weights = attn_weights + self._tome_info["size"].log()[:, None, None, :, 0]
 
-            if self.config._attn_implementation == "eager" and attention_mask is not None:
-                # eager_attention_forward applies the mask as a post-softmax
-                # multiply (head-mask semantics), but proportional attention
-                # requires a pre-softmax additive bias.  Handle manually.
-                attn_weights = (query_layer @ key_layer.transpose(-2, -1)) * self.scaling
-                attn_weights = attn_weights + attention_mask
-                attn_weights = torch.nn.functional.softmax(
-                    attn_weights,
-                    dim=-1,
-                    dtype=torch.float32,
-                ).to(query_layer.dtype)
-                dropout_p = self.dropout_prob if self.training else 0.0
-                attn_weights = torch.nn.functional.dropout(attn_weights, p=dropout_p, training=self.training)
-                context_layer = (attn_weights @ value_layer).transpose(1, 2).contiguous()
-                attn_probs = attn_weights
-            else:
-                attention_interface: Callable = eager_attention_forward
-                if self.config._attn_implementation != "eager":
-                    attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+            if head_mask is not None:
+                attn_weights = attn_weights * head_mask
 
-                context_layer, attn_probs = attention_interface(
-                    self,
-                    query_layer,
-                    key_layer,
-                    value_layer,
-                    attention_mask,
-                    head_mask=head_mask,
-                    scaling=self.scaling,
-                    dropout=self.dropout_prob if self.training else 0.0,
-                )
+            attn_weights = attn_weights.softmax(dim=-1)
+            attn_probs = torch.nn.functional.dropout(
+                attn_weights, p=self.dropout_prob if self.training else 0.0
+            )
 
+            context_layer = (attn_probs @ value_layer).transpose(1, 2)
             context_layer = context_layer.reshape(batch_size, -1, self.all_head_size)
+
+            # Store the key mean as the similarity metric for token merging.
+            self._tome_info["metric"] = key_layer.mean(1)
 
             return context_layer, attn_probs
 
@@ -333,21 +297,7 @@ try:
             hidden_states: torch.Tensor,
             head_mask: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
-            """
-            Forward pass with token merging between attention and MLP.
-
-            Parameters
-            ----------
-            hidden_states : torch.Tensor
-                Input token tensor of shape ``[batch, tokens, channels]``.
-            head_mask : torch.Tensor, optional
-                Mask for attention heads.
-
-            Returns
-            -------
-            torch.Tensor
-                Output tensor after attention, token merging, and MLP.
-            """
+            """Forward pass with token merging between attention and MLP."""
             # --- self-attention + first residual ---
             attention_output = self.attention(
                 self.layernorm_before(hidden_states),
