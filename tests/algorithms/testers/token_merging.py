@@ -2,6 +2,7 @@ from typing import Any
 
 from datasets import load_dataset
 import torch
+from PIL import Image
 
 from pruna import PrunaModel
 from pruna.algorithms.token_merging import TokenMerging
