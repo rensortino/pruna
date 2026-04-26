@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, Callable, Optional, Tuple
+from collections import deque
 
 import torch
 from ConfigSpace import UniformIntegerHyperparameter
